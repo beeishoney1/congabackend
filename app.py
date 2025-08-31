@@ -7,6 +7,7 @@ from datetime import datetime
 import requests
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
+import time  # Add this import
 
 app = Flask(__name__)
 CORS(app)
@@ -50,7 +51,7 @@ def init_db():
             )
         """)
         
-        # Create purchases table
+        # Create purchases table - ADD payment_number and payment_name columns
         cur.execute("""
             CREATE TABLE IF NOT EXISTS purchases (
                 id SERIAL PRIMARY KEY,
@@ -59,6 +60,8 @@ def init_db():
                 server_id VARCHAR(100) NOT NULL,
                 amount INTEGER NOT NULL,
                 payment_slip_url TEXT,
+                payment_number VARCHAR(50),  -- NEW COLUMN
+                payment_name VARCHAR(100),   -- NEW COLUMN
                 status VARCHAR(20) DEFAULT 'Pending',
                 admin_notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -200,16 +203,18 @@ def login():
 @app.route('/buy-diamond', methods=['POST'])
 def buy_diamond():
     try:
-        # Use form and files instead of get_json
-        user_id = request.form.get('userId')
-        package_id = request.form.get('packageId')
-        game_id = request.form.get('gameId')
-        server_id = request.form.get('serverId')
-        payment_slip_file = request.files.get('paymentSlip')
+        # Get data from JSON instead of form data
+        data = request.get_json()
+        user_id = data.get('userId')
+        package_id = data.get('packageId')
+        game_id = data.get('gameId')
+        server_id = data.get('serverId')
+        payment_number = data.get('paymentNumber')  # NEW FIELD
+        payment_name = data.get('paymentName')      # NEW FIELD
 
         print(f"Received purchase request: user_id={user_id}, package_id={package_id}, game_id={game_id}, server_id={server_id}")
 
-        if not all([user_id, package_id, game_id, server_id]):
+        if not all([user_id, package_id, game_id, server_id, payment_number, payment_name]):
             return jsonify({'error': 'Missing required fields'}), 400
 
         conn = get_db_connection()
@@ -223,23 +228,11 @@ def buy_diamond():
                 return jsonify({'error': 'Invalid package ID'}), 400
             amount = result[0]
             
-            # Save uploaded file
-            payment_slip_url = None
-            if payment_slip_file and payment_slip_file.filename:
-                uploads_dir = "./uploads"
-                if not os.path.exists(uploads_dir):
-                    os.makedirs(uploads_dir)
-                # Generate unique filename to avoid conflicts
-                filename = f"{user_id}_{int(time.time())}_{payment_slip_file.filename}"
-                file_path = os.path.join(uploads_dir, filename)
-                payment_slip_file.save(file_path)
-                payment_slip_url = file_path
-
-            # Create purchase record - match your table columns exactly
+            # Create purchase record with payment number and name
             cur.execute(
-                """INSERT INTO purchases (user_id, game_id, server_id, amount, payment_slip_url) 
-                   VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-                (user_id, game_id, server_id, amount, payment_slip_url)
+                """INSERT INTO purchases (user_id, game_id, server_id, amount, payment_number, payment_name) 
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                (user_id, game_id, server_id, amount, payment_number, payment_name)
             )
             purchase_id = cur.fetchone()[0]
             conn.commit()
@@ -252,7 +245,8 @@ def buy_diamond():
             if telegram_id:
                 message = (
                     f"🎮 Diamond Purchase Submitted!\n\n"
-                    f"Game ID: {game_id}\nServer: {server_id}\nAmount: {amount}\nStatus: Pending\n\n"
+                    f"Game ID: {game_id}\nServer: {server_id}\nAmount: {amount}\n"
+                    f"Payment: {payment_number} ({payment_name})\nStatus: Pending\n\n"
                     f"We'll process your order soon!"
                 )
                 send_telegram_notification(telegram_id, message)
@@ -354,7 +348,7 @@ def admin_update_purchase():
             """UPDATE purchases 
                SET status = %s, admin_notes = %s, updated_at = CURRENT_TIMESTAMP 
                WHERE id = %s 
-               RETURNING user_id, game_id, server_id, amount""",
+               RETURNING user_id, game_id, server_id, amount, payment_number, payment_name""",
             (status, admin_notes, purchase_id)
         )
         purchase = cur.fetchone()
@@ -362,7 +356,7 @@ def admin_update_purchase():
         if not purchase:
             return jsonify({'error': 'Purchase not found'}), 404
         
-        user_id, game_id, server_id, amount = purchase
+        user_id, game_id, server_id, amount, payment_number, payment_name = purchase
         
         # Get user telegram_id for notification
         cur.execute("SELECT telegram_id FROM users WHERE id = %s", (user_id,))
@@ -370,7 +364,7 @@ def admin_update_purchase():
         telegram_id = user[0] if user else None
         
         if telegram_id:
-            message = f"🎮 Diamond Purchase Update!\n\nGame ID: {game_id}\nServer: {server_id}\nAmount: {amount}\nStatus: {status}\n\nNotes: {admin_notes}"
+            message = f"🎮 Diamond Purchase Update!\n\nGame ID: {game_id}\nServer: {server_id}\nAmount: {amount}\nPayment: {payment_number} ({payment_name})\nStatus: {status}\n\nNotes: {admin_notes}"
             send_telegram_notification(telegram_id, message)
         
         conn.commit()
