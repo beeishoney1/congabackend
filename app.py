@@ -1,4 +1,4 @@
-# app.py - Complete Diamond Shop Backend
+# app.py - Diamond Shop Backend API Only
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
@@ -101,7 +101,7 @@ def init_db():
         cur.close()
         conn.close()
 
-# Send Telegram notification
+# Send Telegram notification (called by API endpoints, not a bot)
 def send_telegram_notification(telegram_id, message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
