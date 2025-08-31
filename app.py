@@ -1,12 +1,12 @@
 # app.py - Complete Diamond Shop Backend
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import pg8000
 from datetime import datetime
 import requests
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 CORS(app)
@@ -17,67 +17,98 @@ TELEGRAM_BOT_TOKEN = "8042603273:AAFZpfKNICr57kYBkexm1MmcJLU_2mTSRmA"
 
 # Database connection function
 def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL)
+    # Parse the database URL
+    db_url = urlparse(DATABASE_URL)
+    
+    conn = pg8000.connect(
+        host=db_url.hostname,
+        port=db_url.port,
+        database=db_url.path[1:],  # Remove the leading '/'
+        user=db_url.username,
+        password=db_url.password
+    )
     return conn
 
 # Initialize database tables
 def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    # Create users table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(50) UNIQUE NOT NULL,
-            password_hash VARCHAR(255) NOT NULL,
-            telegram_id VARCHAR(50) UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Create diamond_prices table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS diamond_prices (
-            id SERIAL PRIMARY KEY,
-            game_name VARCHAR(100) NOT NULL,
-            server_name VARCHAR(100) NOT NULL,
-            amount INTEGER NOT NULL,
-            price DECIMAL(10, 2) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Create purchases table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS purchases (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES users(id),
-            game_id VARCHAR(100) NOT NULL,
-            server_id VARCHAR(100) NOT NULL,
-            amount INTEGER NOT NULL,
-            payment_slip_url TEXT,
-            status VARCHAR(20) DEFAULT 'Pending',
-            admin_notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Create admin users table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admin_users (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES users(id),
-            is_active BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Create users table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                telegram_id VARCHAR(50) UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create diamond_prices table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS diamond_prices (
+                id SERIAL PRIMARY KEY,
+                game_name VARCHAR(100) NOT NULL,
+                server_name VARCHAR(100) NOT NULL,
+                amount INTEGER NOT NULL,
+                price DECIMAL(10, 2) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create purchases table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS purchases (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                game_id VARCHAR(100) NOT NULL,
+                server_id VARCHAR(100) NOT NULL,
+                amount INTEGER NOT NULL,
+                payment_slip_url TEXT,
+                status VARCHAR(20) DEFAULT 'Pending',
+                admin_notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create admin users table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Add some sample diamond prices
+        cur.execute("SELECT COUNT(*) FROM diamond_prices")
+        if cur.fetchone()[0] == 0:
+            sample_prices = [
+                ('Mobile Legends', 'Server 1', 100, 10.00),
+                ('Mobile Legends', 'Server 1', 500, 45.00),
+                ('Mobile Legends', 'Server 1', 1000, 85.00),
+                ('PUBG Mobile', 'Asia', 100, 12.00),
+                ('PUBG Mobile', 'Asia', 500, 55.00),
+                ('PUBG Mobile', 'Asia', 1000, 100.00),
+            ]
+            for price in sample_prices:
+                cur.execute(
+                    "INSERT INTO diamond_prices (game_name, server_name, amount, price) VALUES (%s, %s, %s, %s)",
+                    price
+                )
+        
+        conn.commit()
+        print("Database initialized successfully")
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+    finally:
+        cur.close()
+        conn.close()
 
 # Send Telegram notification
 def send_telegram_notification(telegram_id, message):
@@ -93,6 +124,11 @@ def send_telegram_notification(telegram_id, message):
     except Exception as e:
         print(f"Error sending Telegram notification: {e}")
         return False
+
+# Health check endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'healthy'}), 200
 
 # User Registration
 @app.route('/register', methods=['POST'])
@@ -142,24 +178,24 @@ def login():
         return jsonify({'error': 'Username and password are required'}), 400
     
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
     
     try:
         # Get user by username
         cur.execute("SELECT * FROM users WHERE username = %s", (username,))
         user = cur.fetchone()
         
-        if not user or not check_password_hash(user['password_hash'], password):
+        if not user or not check_password_hash(user[2], password):
             return jsonify({'error': 'Invalid credentials'}), 401
         
         # Check if user is admin
-        cur.execute("SELECT * FROM admin_users WHERE user_id = %s AND is_active = TRUE", (user['id'],))
+        cur.execute("SELECT * FROM admin_users WHERE user_id = %s AND is_active = TRUE", (user[0],))
         is_admin = cur.fetchone() is not None
         
         user_data = {
-            'id': user['id'],
-            'username': user['username'],
-            'telegram_id': user['telegram_id'],
+            'id': user[0],
+            'username': user[1],
+            'telegram_id': user[3],
             'is_admin': is_admin
         }
         
@@ -222,7 +258,7 @@ def purchase_history():
         return jsonify({'error': 'User ID is required'}), 400
     
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
     
     try:
         cur.execute(
@@ -233,7 +269,21 @@ def purchase_history():
                ORDER BY p.created_at DESC""",
             (user_id,)
         )
-        purchases = cur.fetchall()
+        purchases = []
+        for row in cur.fetchall():
+            purchases.append({
+                'id': row[0],
+                'user_id': row[1],
+                'game_id': row[2],
+                'server_id': row[3],
+                'amount': row[4],
+                'payment_slip_url': row[5],
+                'status': row[6],
+                'admin_notes': row[7],
+                'created_at': row[8],
+                'updated_at': row[9],
+                'username': row[10]
+            })
         
         return jsonify({'purchases': purchases}), 200
     except Exception as e:
@@ -248,7 +298,7 @@ def admin_purchases():
     status = request.args.get('status', 'Pending')
     
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
     
     try:
         if status == 'All':
@@ -268,7 +318,22 @@ def admin_purchases():
                 (status,)
             )
         
-        purchases = cur.fetchall()
+        purchases = []
+        for row in cur.fetchall():
+            purchases.append({
+                'id': row[0],
+                'user_id': row[1],
+                'game_id': row[2],
+                'server_id': row[3],
+                'amount': row[4],
+                'payment_slip_url': row[5],
+                'status': row[6],
+                'admin_notes': row[7],
+                'created_at': row[8],
+                'updated_at': row[9],
+                'username': row[10]
+            })
+        
         return jsonify({'purchases': purchases}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -328,13 +393,23 @@ def admin_update_purchase():
 @app.route('/admin/diamond-prices', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def admin_diamond_prices():
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
     
     try:
         # GET - Get all diamond prices
         if request.method == 'GET':
             cur.execute("SELECT * FROM diamond_prices ORDER BY game_name, server_name, amount")
-            prices = cur.fetchall()
+            prices = []
+            for row in cur.fetchall():
+                prices.append({
+                    'id': row[0],
+                    'game_name': row[1],
+                    'server_name': row[2],
+                    'amount': row[3],
+                    'price': float(row[4]),
+                    'created_at': row[5],
+                    'updated_at': row[6]
+                })
             return jsonify({'prices': prices}), 200
         
         data = request.get_json()
@@ -355,7 +430,7 @@ def admin_diamond_prices():
                    RETURNING id""",
                 (game_name, server_name, amount, price)
             )
-            price_id = cur.fetchone()['id']
+            price_id = cur.fetchone()[0]
             conn.commit()
             return jsonify({'message': 'Price created successfully', 'price_id': price_id}), 201
         
@@ -406,7 +481,7 @@ def admin_filter_purchases():
         return jsonify({'error': 'Username is required'}), 400
     
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
     
     try:
         cur.execute(
@@ -417,7 +492,22 @@ def admin_filter_purchases():
                ORDER BY p.created_at DESC""",
             (f'%{username}%',)
         )
-        purchases = cur.fetchall()
+        
+        purchases = []
+        for row in cur.fetchall():
+            purchases.append({
+                'id': row[0],
+                'user_id': row[1],
+                'game_id': row[2],
+                'server_id': row[3],
+                'amount': row[4],
+                'payment_slip_url': row[5],
+                'status': row[6],
+                'admin_notes': row[7],
+                'created_at': row[8],
+                'updated_at': row[9],
+                'username': row[10]
+            })
         
         return jsonify({'purchases': purchases}), 200
     except Exception as e:
@@ -433,7 +523,7 @@ def get_diamond_prices():
     server_name = request.args.get('server_name')
     
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
     
     try:
         if game_name and server_name:
@@ -449,18 +539,24 @@ def get_diamond_prices():
         else:
             cur.execute("SELECT * FROM diamond_prices ORDER BY game_name, server_name, amount")
         
-        prices = cur.fetchall()
+        prices = []
+        for row in cur.fetchall():
+            prices.append({
+                'id': row[0],
+                'game_name': row[1],
+                'server_name': row[2],
+                'amount': row[3],
+                'price': float(row[4]),
+                'created_at': row[5],
+                'updated_at': row[6]
+            })
+        
         return jsonify({'prices': prices}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
         cur.close()
         conn.close()
-
-# Health check endpoint
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({'status': 'healthy'}), 200
 
 if __name__ == '__main__':
     init_db()
