@@ -199,70 +199,77 @@ def login():
 
 @app.route('/buy-diamond', methods=['POST'])
 def buy_diamond():
-    # Use form and files instead of get_json
-    user_id = request.form.get('userId')  # Changed from 'user_id' to 'userId'
-    package_id = request.form.get('packageId')  # Changed from 'package_id' to 'packageId'
-    game_id = request.form.get('gameId')  # Changed from 'game_id' to 'gameId'
-    server_id = request.form.get('serverId')  # Changed from 'server_id' to 'serverId'
-    payment_slip_file = request.files.get('paymentSlip')  # Changed from 'payment_slip' to 'paymentSlip'
-
-    if not all([user_id, package_id, game_id, server_id]):
-        return jsonify({'error': 'Missing required fields'}), 400
-
-    # Get amount from package_id by querying the database
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
     try:
-        # Get the amount from diamond_prices table using package_id
-        cur.execute("SELECT amount FROM diamond_prices WHERE id = %s", (package_id,))
-        result = cur.fetchone()
-        if not result:
-            return jsonify({'error': 'Invalid package ID'}), 400
-        amount = result[0]
+        # Use form and files instead of get_json
+        user_id = request.form.get('userId')
+        package_id = request.form.get('packageId')
+        game_id = request.form.get('gameId')
+        server_id = request.form.get('serverId')
+        payment_slip_file = request.files.get('paymentSlip')
+
+        print(f"Received purchase request: user_id={user_id}, package_id={package_id}, game_id={game_id}, server_id={server_id}")
+
+        if not all([user_id, package_id, game_id, server_id]):
+            return jsonify({'error': 'Missing required fields'}), 400
+
+        conn = get_db_connection()
+        cur = conn.cursor()
         
-        # Save uploaded file
-        payment_slip_url = None
-        if payment_slip_file:
-            uploads_dir = "./uploads"
-            if not os.path.exists(uploads_dir):
-                os.makedirs(uploads_dir)
-            # Generate unique filename to avoid conflicts
-            filename = f"{user_id}_{int(time.time())}_{payment_slip_file.filename}"
-            file_path = os.path.join(uploads_dir, filename)
-            payment_slip_file.save(file_path)
-            payment_slip_url = file_path  # Save file path in DB
+        try:
+            # Get the amount from diamond_prices table using package_id
+            cur.execute("SELECT amount FROM diamond_prices WHERE id = %s", (package_id,))
+            result = cur.fetchone()
+            if not result:
+                return jsonify({'error': 'Invalid package ID'}), 400
+            amount = result[0]
+            
+            # Save uploaded file
+            payment_slip_url = None
+            if payment_slip_file and payment_slip_file.filename:
+                uploads_dir = "./uploads"
+                if not os.path.exists(uploads_dir):
+                    os.makedirs(uploads_dir)
+                # Generate unique filename to avoid conflicts
+                filename = f"{user_id}_{int(time.time())}_{payment_slip_file.filename}"
+                file_path = os.path.join(uploads_dir, filename)
+                payment_slip_file.save(file_path)
+                payment_slip_url = file_path
 
-        # Create purchase record
-        cur.execute(
-            """INSERT INTO purchases (user_id, game_id, server_id, amount, payment_slip_url) 
-               VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-            (user_id, game_id, server_id, amount, payment_slip_url)
-        )
-        purchase_id = cur.fetchone()[0]
-        conn.commit()
-
-        # Get user telegram_id for notification
-        cur.execute("SELECT telegram_id FROM users WHERE id = %s", (user_id,))
-        user = cur.fetchone()
-        telegram_id = user[0] if user else None
-
-        if telegram_id:
-            message = (
-                f"🎮 Diamond Purchase Submitted!\n\n"
-                f"Game ID: {game_id}\nServer: {server_id}\nAmount: {amount}\nStatus: Pending\n\n"
-                f"We'll process your order soon!"
+            # Create purchase record - match your table columns exactly
+            cur.execute(
+                """INSERT INTO purchases (user_id, game_id, server_id, amount, payment_slip_url) 
+                   VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                (user_id, game_id, server_id, amount, payment_slip_url)
             )
-            send_telegram_notification(telegram_id, message)
+            purchase_id = cur.fetchone()[0]
+            conn.commit()
 
-        return jsonify({'message': 'Purchase submitted successfully', 'purchase_id': purchase_id}), 201
+            # Get user telegram_id for notification
+            cur.execute("SELECT telegram_id FROM users WHERE id = %s", (user_id,))
+            user = cur.fetchone()
+            telegram_id = user[0] if user else None
+
+            if telegram_id:
+                message = (
+                    f"🎮 Diamond Purchase Submitted!\n\n"
+                    f"Game ID: {game_id}\nServer: {server_id}\nAmount: {amount}\nStatus: Pending\n\n"
+                    f"We'll process your order soon!"
+                )
+                send_telegram_notification(telegram_id, message)
+
+            return jsonify({'message': 'Purchase submitted successfully', 'purchase_id': purchase_id}), 201
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Database error in buy-diamond: {str(e)}")
+            return jsonify({'error': f'Database error: {str(e)}'}), 500
+        finally:
+            cur.close()
+            conn.close()
+            
     except Exception as e:
-        conn.rollback()
-        return jsonify({'error': str(e)}), 500
-    finally:
-        cur.close()
-        conn.close()
-
+        print(f"General error in buy-diamond: {str(e)}")
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
 
 # Get Purchase History
 @app.route('/purchase-history', methods=['GET'])
