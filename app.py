@@ -197,33 +197,42 @@ def login():
         cur.close()
         conn.close()
 
-## Buy Diamonds - fixed for file upload
 @app.route('/buy-diamond', methods=['POST'])
 def buy_diamond():
     # Use form and files instead of get_json
-    user_id = request.form.get('user_id')
-    game_id = request.form.get('game_id')
-    server_id = request.form.get('server_id')
-    amount = request.form.get('amount')
-    payment_slip_file = request.files.get('payment_slip')
+    user_id = request.form.get('userId')  # Changed from 'user_id' to 'userId'
+    package_id = request.form.get('packageId')  # Changed from 'package_id' to 'packageId'
+    game_id = request.form.get('gameId')  # Changed from 'game_id' to 'gameId'
+    server_id = request.form.get('serverId')  # Changed from 'server_id' to 'serverId'
+    payment_slip_file = request.files.get('paymentSlip')  # Changed from 'payment_slip' to 'paymentSlip'
 
-    if not all([user_id, game_id, server_id, amount]):
+    if not all([user_id, package_id, game_id, server_id]):
         return jsonify({'error': 'Missing required fields'}), 400
 
-    # Save uploaded file
-    payment_slip_url = None
-    if payment_slip_file:
-        uploads_dir = "./uploads"
-        if not os.path.exists(uploads_dir):
-            os.makedirs(uploads_dir)
-        file_path = os.path.join(uploads_dir, payment_slip_file.filename)
-        payment_slip_file.save(file_path)
-        payment_slip_url = file_path  # Save file path in DB
-
+    # Get amount from package_id by querying the database
     conn = get_db_connection()
     cur = conn.cursor()
-
+    
     try:
+        # Get the amount from diamond_prices table using package_id
+        cur.execute("SELECT amount FROM diamond_prices WHERE id = %s", (package_id,))
+        result = cur.fetchone()
+        if not result:
+            return jsonify({'error': 'Invalid package ID'}), 400
+        amount = result[0]
+        
+        # Save uploaded file
+        payment_slip_url = None
+        if payment_slip_file:
+            uploads_dir = "./uploads"
+            if not os.path.exists(uploads_dir):
+                os.makedirs(uploads_dir)
+            # Generate unique filename to avoid conflicts
+            filename = f"{user_id}_{int(time.time())}_{payment_slip_file.filename}"
+            file_path = os.path.join(uploads_dir, filename)
+            payment_slip_file.save(file_path)
+            payment_slip_url = file_path  # Save file path in DB
+
         # Create purchase record
         cur.execute(
             """INSERT INTO purchases (user_id, game_id, server_id, amount, payment_slip_url) 
