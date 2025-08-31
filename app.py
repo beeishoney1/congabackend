@@ -197,22 +197,32 @@ def login():
         cur.close()
         conn.close()
 
-# Buy Diamonds
+## Buy Diamonds - fixed for file upload
 @app.route('/buy-diamond', methods=['POST'])
 def buy_diamond():
-    data = request.get_json()
-    user_id = data.get('user_id')
-    game_id = data.get('game_id')
-    server_id = data.get('server_id')
-    amount = data.get('amount')
-    payment_slip_url = data.get('payment_slip_url')
-    
+    # Use form and files instead of get_json
+    user_id = request.form.get('user_id')
+    game_id = request.form.get('game_id')
+    server_id = request.form.get('server_id')
+    amount = request.form.get('amount')
+    payment_slip_file = request.files.get('payment_slip')
+
     if not all([user_id, game_id, server_id, amount]):
         return jsonify({'error': 'Missing required fields'}), 400
-    
+
+    # Save uploaded file
+    payment_slip_url = None
+    if payment_slip_file:
+        uploads_dir = "./uploads"
+        if not os.path.exists(uploads_dir):
+            os.makedirs(uploads_dir)
+        file_path = os.path.join(uploads_dir, payment_slip_file.filename)
+        payment_slip_file.save(file_path)
+        payment_slip_url = file_path  # Save file path in DB
+
     conn = get_db_connection()
     cur = conn.cursor()
-    
+
     try:
         # Create purchase record
         cur.execute(
@@ -222,16 +232,20 @@ def buy_diamond():
         )
         purchase_id = cur.fetchone()[0]
         conn.commit()
-        
+
         # Get user telegram_id for notification
         cur.execute("SELECT telegram_id FROM users WHERE id = %s", (user_id,))
         user = cur.fetchone()
         telegram_id = user[0] if user else None
-        
+
         if telegram_id:
-            message = f"🎮 Diamond Purchase Submitted!\n\nGame ID: {game_id}\nServer: {server_id}\nAmount: {amount}\nStatus: Pending\n\nWe'll process your order soon!"
+            message = (
+                f"🎮 Diamond Purchase Submitted!\n\n"
+                f"Game ID: {game_id}\nServer: {server_id}\nAmount: {amount}\nStatus: Pending\n\n"
+                f"We'll process your order soon!"
+            )
             send_telegram_notification(telegram_id, message)
-        
+
         return jsonify({'message': 'Purchase submitted successfully', 'purchase_id': purchase_id}), 201
     except Exception as e:
         conn.rollback()
@@ -239,6 +253,7 @@ def buy_diamond():
     finally:
         cur.close()
         conn.close()
+
 
 # Get Purchase History
 @app.route('/purchase-history', methods=['GET'])
