@@ -4,3 +4,4 @@ requests
 Werkzeug
 psycopg2-binary
 python-telegram-bot==20.5
+pymysql
