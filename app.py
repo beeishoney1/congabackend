@@ -8,9 +8,22 @@ import requests
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
 import time  # Add this import
+from flask_cors import CORS
+
 
 app = Flask(__name__)
-CORS(app)
+# Configure CORS to allow requests from your Netlify frontend
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            "https://congashop.netlify.app",
+            "http://localhost:3000",  # For local development
+            "http://localhost:5173"   # For Vite development
+        ],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # Configuration
 DATABASE_URL = "postgresql://postgres.mroyctjvmcuyuyuyumvj:congashop123laoidnfo2ndo@aws-1-eu-north-1.pooler.supabase.com:6543/postgres"
