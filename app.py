@@ -7,7 +7,9 @@ from datetime import datetime
 import requests
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
-import time
+import time  # Add this import
+from flask_cors import CORS
+
 
 app = Flask(__name__)
 # Configure CORS to allow requests from your Netlify frontend
@@ -26,7 +28,6 @@ CORS(app, resources={
 # Configuration
 DATABASE_URL = "postgresql://postgres.mroyctjvmcuyuyuyumvj:congashop123laoidnfo2ndo@aws-1-eu-north-1.pooler.supabase.com:6543/postgres"
 TELEGRAM_BOT_TOKEN = "8042603273:AAFZpfKNICr57kYBkexm1MmcJLU_2mTSRmA"
-ADMIN_TELEGRAM_ID = "YOUR_ADMIN_TELEGRAM_ID"  # Replace with your admin Telegram ID
 
 # Database connection function
 def get_db_connection():
@@ -63,7 +64,7 @@ def init_db():
             )
         """)
         
-        # Create purchases table - ADD payment_type column
+        # Create purchases table - ADD payment_number and payment_name columns
         cur.execute("""
             CREATE TABLE IF NOT EXISTS purchases (
                 id SERIAL PRIMARY KEY,
@@ -72,9 +73,8 @@ def init_db():
                 server_id VARCHAR(100) NOT NULL,
                 amount INTEGER NOT NULL,
                 payment_slip_url TEXT,
-                payment_number VARCHAR(50),
-                payment_name VARCHAR(100),
-                payment_type VARCHAR(20) DEFAULT 'manual',
+                payment_number VARCHAR(50),  -- NEW COLUMN
+                payment_name VARCHAR(100),   -- NEW COLUMN
                 status VARCHAR(20) DEFAULT 'Pending',
                 admin_notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -117,12 +117,12 @@ def init_db():
         cur.close()
         conn.close()
 
-# Send Telegram notification
-def send_telegram_notification(chat_id, message):
+# Send Telegram notification (called by API endpoints, not a bot)
+def send_telegram_notification(telegram_id, message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
-            "chat_id": chat_id,
+            "chat_id": telegram_id,
             "text": message,
             "parse_mode": "HTML"
         }
@@ -131,27 +131,6 @@ def send_telegram_notification(chat_id, message):
     except Exception as e:
         print(f"Error sending Telegram notification: {e}")
         return False
-
-# Get all admin Telegram IDs
-def get_admin_telegram_ids():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    try:
-        cur.execute("""
-            SELECT u.telegram_id 
-            FROM users u 
-            JOIN admin_users au ON u.id = au.user_id 
-            WHERE au.is_active = TRUE AND u.telegram_id IS NOT NULL
-        """)
-        admin_telegram_ids = [row[0] for row in cur.fetchall()]
-        return admin_telegram_ids
-    except Exception as e:
-        print(f"Error getting admin Telegram IDs: {e}")
-        return []
-    finally:
-        cur.close()
-        conn.close()
 
 # Health check endpoint
 @app.route('/health', methods=['GET'])
@@ -243,9 +222,8 @@ def buy_diamond():
         package_id = data.get('packageId')
         game_id = data.get('gameId')
         server_id = data.get('serverId')
-        payment_number = data.get('paymentNumber')
-        payment_name = data.get('paymentName')
-        payment_type = data.get('paymentType', 'manual')
+        payment_number = data.get('paymentNumber')  # NEW FIELD
+        payment_name = data.get('paymentName')      # NEW FIELD
 
         print(f"Received purchase request: user_id={user_id}, package_id={package_id}, game_id={game_id}, server_id={server_id}")
 
@@ -257,50 +235,34 @@ def buy_diamond():
         
         try:
             # Get the amount from diamond_prices table using package_id
-            cur.execute("SELECT amount, price FROM diamond_prices WHERE id = %s", (package_id,))
+            cur.execute("SELECT amount FROM diamond_prices WHERE id = %s", (package_id,))
             result = cur.fetchone()
             if not result:
                 return jsonify({'error': 'Invalid package ID'}), 400
-            amount, price = result
+            amount = result[0]
             
-            # Create purchase record with payment number, name, and type
+            # Create purchase record with payment number and name
             cur.execute(
-                """INSERT INTO purchases (user_id, game_id, server_id, amount, payment_number, payment_name, payment_type) 
-                   VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (user_id, game_id, server_id, amount, payment_number, payment_name, payment_type)
+                """INSERT INTO purchases (user_id, game_id, server_id, amount, payment_number, payment_name) 
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                (user_id, game_id, server_id, amount, payment_number, payment_name)
             )
             purchase_id = cur.fetchone()[0]
             conn.commit()
 
             # Get user telegram_id for notification
-            cur.execute("SELECT username, telegram_id FROM users WHERE id = %s", (user_id,))
+            cur.execute("SELECT telegram_id FROM users WHERE id = %s", (user_id,))
             user = cur.fetchone()
-            username = user[0] if user else None
-            telegram_id = user[1] if user and user[1] else None
+            telegram_id = user[0] if user else None
 
-            # Send notification to user
             if telegram_id:
-                user_message = (
+                message = (
                     f"🎮 Diamond Purchase Submitted!\n\n"
-                    f"Game: {game_id}\nServer: {server_id}\nAmount: {amount} diamonds\n"
-                    f"Price: ${price}\nPayment: {payment_number} ({payment_name})\n"
-                    f"Type: {payment_type}\nStatus: Pending\n\n"
+                    f"Game ID: {game_id}\nServer: {server_id}\nAmount: {amount}\n"
+                    f"Payment: {payment_number} ({payment_name})\nStatus: Pending\n\n"
                     f"We'll process your order soon!"
                 )
-                send_telegram_notification(telegram_id, user_message)
-
-            # Send notification to all admins
-            admin_telegram_ids = get_admin_telegram_ids()
-            admin_message = (
-                f"🛒 New Diamond Purchase!\n\n"
-                f"User: {username} (ID: {user_id})\n"
-                f"Game: {game_id}\nServer: {server_id}\nAmount: {amount} diamonds\n"
-                f"Price: ${price}\nPayment: {payment_number} ({payment_name})\n"
-                f"Type: {payment_type}\nPurchase ID: {purchase_id}"
-            )
-            
-            for admin_id in admin_telegram_ids:
-                send_telegram_notification(admin_id, admin_message)
+                send_telegram_notification(telegram_id, message)
 
             return jsonify({'message': 'Purchase submitted successfully', 'purchase_id': purchase_id}), 201
             
@@ -379,6 +341,7 @@ def admin_purchases():
         cur.close()
         conn.close()
 
+        # Add this to your Flask app.py
 # Admin - Get All Users
 @app.route('/admin/users', methods=['GET'])
 def admin_users():
@@ -421,7 +384,7 @@ def admin_update_purchase():
             """UPDATE purchases 
                SET status = %s, admin_notes = %s, updated_at = CURRENT_TIMESTAMP 
                WHERE id = %s 
-               RETURNING user_id, game_id, server_id, amount, payment_number, payment_name, payment_type""",
+               RETURNING user_id, game_id, server_id, amount, payment_number, payment_name""",
             (status, admin_notes, purchase_id)
         )
         purchase = cur.fetchone()
@@ -429,37 +392,16 @@ def admin_update_purchase():
         if not purchase:
             return jsonify({'error': 'Purchase not found'}), 404
         
-        user_id, game_id, server_id, amount, payment_number, payment_name, payment_type = purchase
+        user_id, game_id, server_id, amount, payment_number, payment_name = purchase
         
         # Get user telegram_id for notification
-        cur.execute("SELECT username, telegram_id FROM users WHERE id = %s", (user_id,))
+        cur.execute("SELECT telegram_id FROM users WHERE id = %s", (user_id,))
         user = cur.fetchone()
-        username = user[0] if user else None
-        telegram_id = user[1] if user and user[1] else None
+        telegram_id = user[0] if user else None
         
-        # Send notification to user
         if telegram_id:
-            emoji = "✅" if status.lower() == "success" else "❌"
-            user_message = (
-                f"{emoji} Diamond Purchase Update!\n\n"
-                f"Game: {game_id}\nServer: {server_id}\nAmount: {amount}\n"
-                f"Payment: {payment_number} ({payment_name})\nType: {payment_type}\n"
-                f"Status: {status}\n\nNotes: {admin_notes}"
-            )
-            send_telegram_notification(telegram_id, user_message)
-        
-        # Send notification to all admins
-        admin_telegram_ids = get_admin_telegram_ids()
-        admin_message = (
-            f"📋 Purchase Status Updated!\n\n"
-            f"User: {username} (ID: {user_id})\n"
-            f"Game: {game_id}\nServer: {server_id}\nAmount: {amount}\n"
-            f"Payment: {payment_number} ({payment_name})\nType: {payment_type}\n"
-            f"New Status: {status}\nPurchase ID: {purchase_id}"
-        )
-        
-        for admin_id in admin_telegram_ids:
-            send_telegram_notification(admin_id, admin_message)
+            message = f"🎮 Diamond Purchase Update!\n\nGame ID: {game_id}\nServer: {server_id}\nAmount: {amount}\nPayment: {payment_number} ({payment_name})\nStatus: {status}\n\nNotes: {admin_notes}"
+            send_telegram_notification(telegram_id, message)
         
         conn.commit()
         return jsonify({'message': 'Purchase updated successfully'}), 200
