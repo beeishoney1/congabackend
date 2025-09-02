@@ -328,6 +328,29 @@ def admin_purchases():
         cur.close()
         conn.close()
 
+        # Add this to your Flask app.py
+# Admin - Get All Users
+@app.route('/admin/users', methods=['GET'])
+def admin_users():
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    try:
+        cur.execute(
+            """SELECT u.*, COUNT(p.id) as order_count 
+               FROM users u 
+               LEFT JOIN purchases p ON u.id = p.user_id 
+               GROUP BY u.id 
+               ORDER BY u.created_at DESC"""
+        )
+        users = cur.fetchall()
+        return jsonify({'users': users}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
 # Admin - Update Purchase Status
 @app.route('/admin/update-purchase', methods=['POST'])
 def admin_update_purchase():
